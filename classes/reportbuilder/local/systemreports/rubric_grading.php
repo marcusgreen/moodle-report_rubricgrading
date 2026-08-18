@@ -27,6 +27,7 @@ use core_reportbuilder\local\filters\number;
 use core_reportbuilder\local\filters\text;
 use lang_string;
 use moodle_database;
+use report_rubricgrading\local\plugin_base;
 use xmldb_table;
 
 /**
@@ -56,16 +57,20 @@ class rubric_grading extends system_report {
         global $DB;
 
         $cmid     = $this->get_parameter('cmid', 0, PARAM_INT);
-        $criteria = $this->get_rubric_criteria($DB, $cmid);
 
-        $this->build_pivot_table($DB, $cmid, $criteria);
+        [, $cm] = get_course_and_cm_from_cmid($cmid);
+        $plugin = \report_rubricgrading\plugin_manager::load($cm);
+
+        $criteria = $this->get_criteria($plugin);
+
+        $this->build_pivot_table($cmid, $criteria, $plugin);
 
         $alias = 'rp';
         $this->set_main_table(self::TEMP_TABLE, $alias);
 
         $this->annotate_entity(self::ENTITY, new lang_string('pluginname', 'report_rubricgrading'));
 
-        $this->define_columns($alias, $criteria);
+        $this->define_columns($alias, $criteria, $plugin);
         $this->define_filters($alias, $criteria);
 
         $this->set_initial_sort_column(self::ENTITY . ':student_fullname', SORT_ASC);
@@ -76,14 +81,23 @@ class rubric_grading extends system_report {
      * Return the rubric criteria for the given assignment course module,
      * ordered by sortorder.
      *
-     * @param moodle_database $DB
-     * @param int             $cmid
+     * @param plugin_base $plugin
      * @return array  Indexed array of stdClass objects (id, description, sortorder).
      */
-    private function get_rubric_criteria(moodle_database $DB, int $cmid): array {
-        if ($cmid <= 0) {
-            return [];
-        }
+    private function get_criteria(plugin_base $plugin): array {
+        // Criteria can be in different places depending on grading type.
+        $method = 'get_criteria_' . $plugin->get_grading_manager()->get_active_method();
+        return array_values($this->$method((int)$plugin->get_cm()->id));
+    }
+
+    /**
+     * Get the criteria for a rubric graded activity.
+     * @param int $cmid
+     * @return array
+     * @throws \dml_exception
+     */
+    protected function get_criteria_rubric(int $cmid): array {
+        global $DB;
         $sql = "SELECT grc.id, grc.description, grc.sortorder
                   FROM {gradingform_rubric_criteria} grc
                   JOIN {grading_definitions} gd  ON gd.id  = grc.definitionid
@@ -92,7 +106,45 @@ class rubric_grading extends system_report {
                   JOIN {course_modules}      cm  ON cm.id  = ctx.instanceid
                  WHERE cm.id = :cmid
               ORDER BY grc.sortorder";
-        return array_values($DB->get_records_sql($sql, ['cmid' => $cmid]));
+        return $DB->get_records_sql($sql, ['cmid' => $cmid]);
+    }
+
+    /**
+     * Get the criteria for a marking guide graded activity.
+     * @param int $cmid
+     * @return array
+     * @throws \dml_exception
+     */
+    protected function get_criteria_guide(int $cmid): array {
+        global $DB;
+        $sql = "SELECT grc.id, grc.description, grc.sortorder
+                  FROM {gradingform_guide_criteria} grc
+                  JOIN {grading_definitions} gd  ON gd.id  = grc.definitionid
+                  JOIN {grading_areas}       ga  ON ga.id  = gd.areaid
+                  JOIN {context}             ctx ON ctx.id = ga.contextid
+                  JOIN {course_modules}      cm  ON cm.id  = ctx.instanceid
+                 WHERE cm.id = :cmid
+              ORDER BY grc.sortorder";
+        return $DB->get_records_sql($sql, ['cmid' => $cmid]);
+    }
+
+    /**
+     * Get the criteria for a rubric graded activity.
+     * @param int $cmid
+     * @return array
+     * @throws \dml_exception
+     */
+    protected function get_criteria_rubric_ranges(int $cmid): array {
+        global $DB;
+        $sql = "SELECT grc.id, grc.description, grc.sortorder
+                  FROM {gradingform_rubric_ranges_c} grc
+                  JOIN {grading_definitions} gd  ON gd.id  = grc.definitionid
+                  JOIN {grading_areas}       ga  ON ga.id  = gd.areaid
+                  JOIN {context}             ctx ON ctx.id = ga.contextid
+                  JOIN {course_modules}      cm  ON cm.id  = ctx.instanceid
+                 WHERE cm.id = :cmid
+              ORDER BY grc.sortorder";
+        return $DB->get_records_sql($sql, ['cmid' => $cmid]);
     }
 
     /**
@@ -102,11 +154,12 @@ class rubric_grading extends system_report {
      * and three fields per criterion (score, level definition, remark) are added
      * based on the rubric criteria found for the assignment.
      *
-     * @param moodle_database $DB
      * @param int             $cmid
      * @param array           $criteria  Ordered criteria objects.
+     * @param plugin_base     $plugin    The plugin instance for the specific activity type.
      */
-    private function build_pivot_table(moodle_database $DB, int $cmid, array $criteria): void {
+    private function build_pivot_table(int $cmid, array $criteria, plugin_base $plugin): void {
+        global $DB;
         $dbman = $DB->get_manager();
 
         // Drop any table left from a previous request in the same DB session
@@ -141,58 +194,24 @@ class rubric_grading extends system_report {
             $xmldbtable->add_field("crit{$n}_remark", XMLDB_TYPE_TEXT, null, null, null, null);
         }
 
+        // Add any extra fields we need for the specific activity type.
+        $plugin->add_report_fields($xmldbtable);
+
         $xmldbtable->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+
+        // Add any extra keys we need for the specific activity type.
+        $plugin->add_report_keys($xmldbtable);
+
         $dbman->create_temp_table($xmldbtable);
 
         if ($cmid <= 0 || empty($criteria)) {
             return; // Nothing to populate; the empty table satisfies the schema.
         }
 
-        // Fetch raw (un-pivoted) grading data.
-        $rawsql = "SELECT grf.id,
-                          ag.userid,
-                          ag.grade,
-                          asg.grade              AS gradeoutof,
-                          afc.commenttext        AS overallfeedback,
-                          ag.timemodified        AS timegraded,
-                          stu.firstname,
-                          stu.lastname,
-                          stu.email,
-                          stu.username,
-                          stu.idnumber,
-                          stu.firstnamephonetic,
-                          stu.lastnamephonetic,
-                          stu.middlename,
-                          stu.alternatename,
-                          grdr.firstname         AS grader_firstname,
-                          grdr.lastname          AS grader_lastname,
-                          grdr.firstnamephonetic AS grader_firstnamephonetic,
-                          grdr.lastnamephonetic  AS grader_lastnamephonetic,
-                          grdr.middlename        AS grader_middlename,
-                          grdr.alternatename     AS grader_alternatename,
-                          grc.id                 AS criterionid,
-                          gl.score,
-                          gl.definition          AS leveldef,
-                          grf.remark
-                     FROM {gradingform_rubric_fillings}  grf
-                     JOIN {gradingform_rubric_criteria}  grc  ON grc.id  = grf.criterionid
-                     JOIN {gradingform_rubric_levels}    gl   ON gl.id   = grf.levelid
-                     JOIN {grading_instances}            gin  ON gin.id  = grf.instanceid
-                                                              AND gin.status = 1
-                     JOIN {assign_grades}                ag   ON ag.id   = gin.itemid
-                     JOIN {grading_definitions}          gd   ON gd.id   = gin.definitionid
-                     JOIN {grading_areas}                ga   ON ga.id   = gd.areaid
-                     JOIN {context}                      ctx  ON ctx.id  = ga.contextid
-                     JOIN {course_modules}               cm   ON cm.id   = ctx.instanceid
-                                                              AND cm.id  = :cmid
-                     JOIN {assign}                       asg  ON asg.id  = cm.instance
-                LEFT JOIN {assignfeedback_comments}      afc  ON afc.grade = ag.id
-                     JOIN {user}                         stu  ON stu.id  = ag.userid
-                                                              AND stu.deleted = 0
-                     JOIN {user}                         grdr ON grdr.id = ag.grader
-                 ORDER BY stu.lastname, stu.firstname, grc.sortorder";
-
-        $rawrows = $DB->get_records_sql($rawsql, ['cmid' => $cmid]);
+        // Here we need to fetch the data to load into this temporary table, which will be different depending
+        // on the activity type.
+        $sql = $plugin->get_sql();
+        $rawrows = $DB->get_records_sql($sql, ['cmid' => $cmid]);
 
         // PHP-level pivot: one entry per userid.
         $criteriamap = [];
@@ -202,7 +221,8 @@ class rubric_grading extends system_report {
 
         $pivotrows = [];
         foreach ($rawrows as $row) {
-            if (!isset($pivotrows[$row->userid])) {
+            $key = $plugin->get_row_key($row);
+            if (!isset($pivotrows[$key])) {
                 $studentobj = (object)[
                     'firstname'         => $row->firstname,
                     'lastname'          => $row->lastname,
@@ -239,19 +259,22 @@ class rubric_grading extends system_report {
                 foreach ($criteria as $i => $crit) {
                     $n = $i + 1;
                     $pivotrow->{"crit{$n}_score"}    = null;
-                    $pivotrow->{"crit{$n}_leveldef"}  = null;
                     $pivotrow->{"crit{$n}_remark"}    = null;
+                    $pivotrow->{"crit{$n}_leveldef"}  = null;
                 }
 
-                $pivotrows[$row->userid] = $pivotrow;
+                // Add any extra data we need for the specific activity type.
+                $plugin->add_row_data($row, $pivotrow);
+
+                $pivotrows[$key] = $pivotrow;
             }
 
             // Fill criterion data into the student's pivot row.
             $n = $criteriamap[$row->criterionid] ?? null;
             if ($n !== null) {
-                $pivotrows[$row->userid]->{"crit{$n}_score"}   = $row->score !== null ? (float)$row->score : null;
-                $pivotrows[$row->userid]->{"crit{$n}_leveldef"} = $row->leveldef;
-                $pivotrows[$row->userid]->{"crit{$n}_remark"}  = $row->remark;
+                $pivotrows[$key]->{"crit{$n}_score"}   = $row->score !== null ? (float)$row->score : null;
+                $pivotrows[$key]->{"crit{$n}_remark"}  = $row->remark;
+                $pivotrows[$key]->{"crit{$n}_leveldef"} = $row->leveldef ?? null;
             }
         }
 
@@ -265,8 +288,9 @@ class rubric_grading extends system_report {
      *
      * @param string $alias    Table alias for the pivot temp table.
      * @param array  $criteria Ordered criteria objects.
+     * @param plugin_base $plugin    The plugin instance for the specific activity type.
      */
-    private function define_columns(string $alias, array $criteria): void {
+    private function define_columns(string $alias, array $criteria, plugin_base $plugin): void {
 
         // 1. Username.
         $this->add_column((new column(
@@ -276,7 +300,7 @@ class rubric_grading extends system_report {
         ))
             ->add_field("{$alias}.student_fullname")
             ->set_type(column::TYPE_TEXT)
-            ->set_is_sortable(true));
+            ->set_is_sortable(false));
 
         // 2. Per-criterion columns (score / level definition / remark).
         foreach ($criteria as $i => $criterion) {
@@ -294,23 +318,25 @@ class rubric_grading extends system_report {
             ))
                 ->add_field("{$alias}.crit{$n}_score")
                 ->set_type(column::TYPE_FLOAT)
-                ->set_is_sortable(true)
+                ->set_is_sortable(false)
                 ->add_callback(static function (?float $v): string {
                     return $v !== null ? format_float($v, 2) : '';
                 }));
 
-            $this->add_column((new column(
-                "crit{$n}_leveldef",
-                new lang_string(
-                    'criterioncolumn',
-                    'report_rubricgrading',
-                    (object)['name' => $desc, 'col' => get_string('definition', 'report_rubricgrading')]
-                ),
-                self::ENTITY
-            ))
-                ->add_field("{$alias}.crit{$n}_leveldef")
-                ->set_type(column::TYPE_LONGTEXT)
-                ->set_is_sortable(false));
+            if ($plugin->method_has_level_definitions()) {
+                $this->add_column((new column(
+                    "crit{$n}_leveldef",
+                    new lang_string(
+                        'criterioncolumn',
+                        'report_rubricgrading',
+                        (object)['name' => $desc, 'col' => get_string('definition', 'report_rubricgrading')]
+                    ),
+                    self::ENTITY
+                ))
+                    ->add_field("{$alias}.crit{$n}_leveldef")
+                    ->set_type(column::TYPE_LONGTEXT)
+                    ->set_is_sortable(false));
+            }
 
             $this->add_column((new column(
                 "crit{$n}_remark",
@@ -344,7 +370,7 @@ class rubric_grading extends system_report {
         ))
             ->add_field("{$alias}.grade")
             ->set_type(column::TYPE_FLOAT)
-            ->set_is_sortable(true)
+            ->set_is_sortable(false)
             ->add_callback(static function (?float $v): string {
                 return $v !== null ? format_float($v, 2) : '';
             }));
@@ -357,7 +383,7 @@ class rubric_grading extends system_report {
         ))
             ->add_field("{$alias}.grader_fullname")
             ->set_type(column::TYPE_TEXT)
-            ->set_is_sortable(true));
+            ->set_is_sortable(false));
 
         // 6. Time graded.
         $this->add_column((new column(
@@ -367,8 +393,23 @@ class rubric_grading extends system_report {
         ))
             ->add_field("{$alias}.timegraded")
             ->set_type(column::TYPE_TIMESTAMP)
-            ->set_is_sortable(true)
+            ->set_is_sortable(false)
             ->add_callback([format::class, 'userdate']));
+
+        $extra = $plugin->add_report_columns();
+        if ($extra) {
+            foreach ($extra as $column) {
+                [$name, $title, $type] = $column;
+                $this->add_column((new column(
+                    $name,
+                    $title,
+                    self::ENTITY
+                ))
+                    ->add_field("{$alias}.{$name}")
+                    ->set_type($type)
+                    ->set_is_sortable(false));
+            }
+        }
     }
 
     /**

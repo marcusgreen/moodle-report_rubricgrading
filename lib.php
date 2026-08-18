@@ -37,19 +37,19 @@ require_once($CFG->dirroot . '/grade/grading/lib.php');
  * @return void
  */
 function report_rubricgrading_extend_navigation_module(navigation_node $navigation, cm_info $cm): void {
-
-    if ($cm->modname !== 'assign') {
+    // Is the activity module supported?
+    if (!\report_rubricgrading\plugin_manager::is_activity_supported($cm)) {
         return;
     }
 
-    $context = $cm->context;
-
-    if (!has_capability('report/rubricgrading:view', $context)) {
+    // Does the user have the capability to view the report?
+    if (!has_capability('report/rubricgrading:view', $cm->context)) {
         return;
     }
 
-    $gradingmanager = get_grading_manager($context, 'mod_assign', 'submissions');
-    if ($gradingmanager->get_active_method() !== 'rubric') {
+    // Get the rubric grading class from the plugin, to handle how it interacts with the report.
+    $plugin = \report_rubricgrading\plugin_manager::load($cm);
+    if (!$plugin || !$plugin->is_activity_using_supported_grading_method()) {
         return;
     }
 

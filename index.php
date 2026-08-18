@@ -32,8 +32,7 @@ use report_rubricgrading\reportbuilder\local\systemreports\rubric_grading;
 
 $cmid = required_param('cmid', PARAM_INT);
 
-$cm      = get_coursemodule_from_id('assign', $cmid, 0, false, MUST_EXIST);
-$course  = $DB->get_record('course', ['id' => $cm->course], '*', MUST_EXIST);
+[$course, $cm] = get_course_and_cm_from_cmid($cmid);
 $context = context_module::instance($cmid);
 
 require_login($course, false, $cm);
@@ -46,7 +45,7 @@ $PAGE->set_pagelayout('report');
 $PAGE->set_title(get_string('pluginname', 'report_rubricgrading'));
 $PAGE->set_heading($course->fullname);
 
-$returnurl = new moodle_url('/mod/assign/view.php', ['id' => $cmid]);
+$returnurl = new moodle_url('/mod/' . $cm->modname . '/view.php', ['id' => $cmid]);
 $PAGE->navbar->add($cm->name, $returnurl);
 $PAGE->navbar->add(get_string('pluginname', 'report_rubricgrading'));
 
@@ -61,7 +60,7 @@ $report = system_report_factory::create(
     'report_rubricgrading',
     '',
     0,
-    ['cmid' => $cmid]
+    ['cmid' => $cmid],
 );
 
 echo html_writer::tag('style', '#rubricpivot-table-wrap td, #rubricpivot-table-wrap th { vertical-align: top !important; }');

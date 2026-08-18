@@ -27,6 +27,6 @@ defined('MOODLE_INTERNAL') || die();
 $plugin->component    = 'report_rubricgrading';
 $plugin->release      = '1.0';
 $plugin->version      = 2025052700;
-$plugin->requires     = 2025041400.05;
-$plugin->supported    = [403, 500];
+$plugin->requires     = 2024100712;
+$plugin->supported    = [405, 500];
 $plugin->maturity     = MATURITY_STABLE;

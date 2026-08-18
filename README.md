@@ -13,10 +13,12 @@ git clone https://github.com/marcusgreen/moodle-report_rubricgrading report/rubr
 
 ## Requirements
 
-- Moodle 4.3 or later
-- An assignment configured to use the **Rubric** advanced grading method
+- Moodle 4.5 or later
+- An assignment (or supported activity type) configured to use the **Rubric, Ranged Rubric, or Marking Guide** advanced grading method.
 
 ## Usage
+
+(Assumption: Using assignment module).
 
 Open an assignment that uses rubric grading. A **Rubric grading report** link will appear in the assignment navigation menu. Clicking it opens the report for that assignment.
 
