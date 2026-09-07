@@ -167,4 +167,12 @@ abstract class plugin_base {
      */
     abstract public function get_row_key(stdClass $row): mixed;
 
+    /**
+     * Apply any extra alterations we need to make to the data before it's converted to pivot table.
+     * @param stdClass $row
+     */
+    public function fiddle(stdClass &$row): void {
+        // Override in plugin classes.
+    }
+
 }
