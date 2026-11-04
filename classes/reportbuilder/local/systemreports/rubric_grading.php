@@ -221,6 +221,11 @@ class rubric_grading extends system_report {
 
         $pivotrows = [];
         foreach ($rawrows as $row) {
+            // Apply any extra fiddling we need to do to the data.
+            $result = $plugin->alter($row);
+            if (!$result) {
+                continue;
+            }
             $key = $plugin->get_row_key($row);
             if (!isset($pivotrows[$key])) {
                 $studentobj = (object)[
@@ -244,14 +249,14 @@ class rubric_grading extends system_report {
                     'userid'            => (int)$row->userid,
                     'student_firstname' => $row->firstname,
                     'student_lastname'  => $row->lastname,
-                    'student_fullname'  => fullname($studentobj),
+                    'student_fullname'  => $row->fullname ?? fullname($studentobj),
                     'student_email'     => $row->email,
                     'student_username'  => $row->username,
                     'student_idnumber'  => $row->idnumber,
                     'grade'             => ($row->grade !== null && $row->grade >= 0) ? (float)$row->grade : null,
                     'gradeoutof'        => $row->gradeoutof !== null ? (float)$row->gradeoutof : null,
                     'overallfeedback'   => $row->overallfeedback,
-                    'grader_fullname'   => fullname($graderobj),
+                    'grader_fullname'   => $row->graderfullname ?? fullname($graderobj),
                     'timegraded'        => $row->timegraded !== null ? (int)$row->timegraded : null,
                 ];
 
@@ -277,7 +282,6 @@ class rubric_grading extends system_report {
                 $pivotrows[$key]->{"crit{$n}_leveldef"} = $row->leveldef ?? null;
             }
         }
-
         if (!empty($pivotrows)) {
             $DB->insert_records(self::TEMP_TABLE, array_values($pivotrows));
         }
@@ -306,8 +310,7 @@ class rubric_grading extends system_report {
         foreach ($criteria as $i => $criterion) {
             $n    = $i + 1;
             $desc = $criterion->description;
-
-            $this->add_column((new column(
+            $col = (new column(
                 "crit{$n}_score",
                 new lang_string(
                     'criterioncolumn',
@@ -318,10 +321,13 @@ class rubric_grading extends system_report {
             ))
                 ->add_field("{$alias}.crit{$n}_score")
                 ->set_type(column::TYPE_FLOAT)
-                ->set_is_sortable(false)
-                ->add_callback(static function (?float $v): string {
+                ->set_is_sortable(false);
+            if (!$plugin->override_column("crit{$n}_score", $col, $alias)) {
+                $col->add_callback(static function (?float $v): string {
                     return $v !== null ? format_float($v, 2) : '';
-                }));
+                });
+            }
+            $this->add_column($col);
 
             if ($plugin->method_has_level_definitions()) {
                 $this->add_column((new column(
@@ -363,17 +369,20 @@ class rubric_grading extends system_report {
             ->set_is_sortable(false));
 
         // 4. Grade.
-        $this->add_column((new column(
+        $gradecol = (new column(
             'grade',
             new lang_string('grade', 'report_rubricgrading'),
             self::ENTITY
         ))
             ->add_field("{$alias}.grade")
             ->set_type(column::TYPE_FLOAT)
-            ->set_is_sortable(false)
-            ->add_callback(static function (?float $v): string {
+            ->set_is_sortable(false);
+        if (!$plugin->override_column('grade', $gradecol, $alias)) {
+            $gradecol->add_callback(static function (?float $v): string {
                 return $v !== null ? format_float($v, 2) : '';
-            }));
+            });
+        }
+        $this->add_column($gradecol);
 
         // 5. Graded by.
         $this->add_column((new column(

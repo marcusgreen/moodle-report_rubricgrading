@@ -58,10 +58,8 @@ final class plugin_manager_test extends advanced_testcase {
 
         $cm = $this->get_cm_info('forum');
 
-        $this->expectException(coding_exception::class);
-        $this->expectExceptionMessage('Class \\mod_forum\\local\\report_rubricgrading\\forum not found.');
-
-        plugin_manager::load($cm);
+        $plugin = plugin_manager::load($cm);
+        $this->assertNull($plugin);
     }
 
     private function get_cm_info(string $modname): cm_info {
