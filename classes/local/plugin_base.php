@@ -180,14 +180,24 @@ abstract class plugin_base {
     /**
      * Allow the plugin to alter a core report column (add fields, callbacks, etc.).
      *
+     * Called for every core column, after the report has applied its own formatting callbacks.
+     * Column callbacks are chained, each receiving the previous one's return value, so:
+     * - use $column->add_callback() to post-process the already formatted value;
+     * - use $column->set_callback() to replace the core formatting entirely.
+     *
+     * Core column names are: student_fullname, crit{n}_score, crit{n}_leveldef, crit{n}_remark,
+     * overallfeedback, grade, grader_fullname and timegraded, where {n} is the criterion's
+     * 1-based position in sort order. Columns from add_report_columns() are not passed here.
+     *
      * Any extra fields added must exist in the pivot table (see add_report_fields()).
      *
      * @param string $name Column name, e.g. 'grade'
      * @param column $column The column object
      * @param string $alias Pivot table alias
-     * @return bool True if the plugin has handled the column formatting, so the default callback is skipped
+     * @param stdClass|null $criterion The criterion (id, description, sortorder) for crit{n}_* columns, otherwise null
+     * @return void
      */
-    public function override_column(string $name, column $column, string $alias): bool {
-        return false;
+    public function alter_column(string $name, column $column, string $alias, ?stdClass $criterion = null): void {
+        // Override in activity specific implementation.
     }
 }

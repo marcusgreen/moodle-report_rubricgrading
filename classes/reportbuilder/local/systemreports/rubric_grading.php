@@ -28,6 +28,7 @@ use core_reportbuilder\local\filters\text;
 use lang_string;
 use moodle_database;
 use report_rubricgrading\local\plugin_base;
+use stdClass;
 use xmldb_table;
 
 /**
@@ -297,20 +298,21 @@ class rubric_grading extends system_report {
     private function define_columns(string $alias, array $criteria, plugin_base $plugin): void {
 
         // 1. Username.
-        $this->add_column((new column(
+        $this->add_core_column((new column(
             'student_fullname',
             new lang_string('fullnameuser', 'moodle'),
             self::ENTITY
         ))
             ->add_field("{$alias}.student_fullname")
             ->set_type(column::TYPE_TEXT)
-            ->set_is_sortable(false));
+            ->set_is_sortable(false), $plugin, $alias);
 
         // 2. Per-criterion columns (score / level definition / remark).
         foreach ($criteria as $i => $criterion) {
             $n    = $i + 1;
             $desc = $criterion->description;
-            $col = (new column(
+
+            $this->add_core_column((new column(
                 "crit{$n}_score",
                 new lang_string(
                     'criterioncolumn',
@@ -321,16 +323,13 @@ class rubric_grading extends system_report {
             ))
                 ->add_field("{$alias}.crit{$n}_score")
                 ->set_type(column::TYPE_FLOAT)
-                ->set_is_sortable(false);
-            if (!$plugin->override_column("crit{$n}_score", $col, $alias)) {
-                $col->add_callback(static function (?float $v): string {
+                ->set_is_sortable(false)
+                ->add_callback(static function (?float $v): string {
                     return $v !== null ? format_float($v, 2) : '';
-                });
-            }
-            $this->add_column($col);
+                }), $plugin, $alias, $criterion);
 
             if ($plugin->method_has_level_definitions()) {
-                $this->add_column((new column(
+                $this->add_core_column((new column(
                     "crit{$n}_leveldef",
                     new lang_string(
                         'criterioncolumn',
@@ -341,10 +340,10 @@ class rubric_grading extends system_report {
                 ))
                     ->add_field("{$alias}.crit{$n}_leveldef")
                     ->set_type(column::TYPE_LONGTEXT)
-                    ->set_is_sortable(false));
+                    ->set_is_sortable(false), $plugin, $alias, $criterion);
             }
 
-            $this->add_column((new column(
+            $this->add_core_column((new column(
                 "crit{$n}_remark",
                 new lang_string(
                     'criterioncolumn',
@@ -355,47 +354,44 @@ class rubric_grading extends system_report {
             ))
                 ->add_field("{$alias}.crit{$n}_remark")
                 ->set_type(column::TYPE_LONGTEXT)
-                ->set_is_sortable(false));
+                ->set_is_sortable(false), $plugin, $alias, $criterion);
         }
 
         // 3. Overall feedback.
-        $this->add_column((new column(
+        $this->add_core_column((new column(
             'overallfeedback',
             new lang_string('overallfeedback', 'report_rubricgrading'),
             self::ENTITY
         ))
             ->add_field("{$alias}.overallfeedback")
             ->set_type(column::TYPE_LONGTEXT)
-            ->set_is_sortable(false));
+            ->set_is_sortable(false), $plugin, $alias);
 
         // 4. Grade.
-        $gradecol = (new column(
+        $this->add_core_column((new column(
             'grade',
             new lang_string('grade', 'report_rubricgrading'),
             self::ENTITY
         ))
             ->add_field("{$alias}.grade")
             ->set_type(column::TYPE_FLOAT)
-            ->set_is_sortable(false);
-        if (!$plugin->override_column('grade', $gradecol, $alias)) {
-            $gradecol->add_callback(static function (?float $v): string {
+            ->set_is_sortable(false)
+            ->add_callback(static function (?float $v): string {
                 return $v !== null ? format_float($v, 2) : '';
-            });
-        }
-        $this->add_column($gradecol);
+            }), $plugin, $alias);
 
         // 5. Graded by.
-        $this->add_column((new column(
+        $this->add_core_column((new column(
             'grader_fullname',
             new lang_string('gradedby', 'report_rubricgrading'),
             self::ENTITY
         ))
             ->add_field("{$alias}.grader_fullname")
             ->set_type(column::TYPE_TEXT)
-            ->set_is_sortable(false));
+            ->set_is_sortable(false), $plugin, $alias);
 
         // 6. Time graded.
-        $this->add_column((new column(
+        $this->add_core_column((new column(
             'timegraded',
             new lang_string('timegraded', 'report_rubricgrading'),
             self::ENTITY
@@ -403,7 +399,7 @@ class rubric_grading extends system_report {
             ->add_field("{$alias}.timegraded")
             ->set_type(column::TYPE_TIMESTAMP)
             ->set_is_sortable(false)
-            ->add_callback([format::class, 'userdate']));
+            ->add_callback([format::class, 'userdate']), $plugin, $alias);
 
         $extra = $plugin->add_report_columns();
         if ($extra) {
@@ -419,6 +415,19 @@ class rubric_grading extends system_report {
                     ->set_is_sortable(false));
             }
         }
+    }
+
+    /**
+     * Let the activity plugin alter a core column, then add it to the report.
+     *
+     * @param column $column The core column, with its default formatting already applied.
+     * @param plugin_base $plugin The plugin instance for the specific activity type.
+     * @param string $alias Table alias for the pivot temp table.
+     * @param stdClass|null $criterion The criterion the column belongs to, if any.
+     */
+    private function add_core_column(column $column, plugin_base $plugin, string $alias, ?stdClass $criterion = null): void {
+        $plugin->alter_column($column->get_name(), $column, $alias, $criterion);
+        $this->add_column($column);
     }
 
     /**
